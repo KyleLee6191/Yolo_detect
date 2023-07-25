@@ -17,7 +17,7 @@ Yolo::Yolo(std::string modelpath, float confThreshold, float nmsThreshold, float
 	if (isCuda) 
 	{
 		net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-		net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+		net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
 		std::cout << "cuda" << std::endl;
 	}
 	else 
@@ -147,6 +147,12 @@ void Yolo::detect(cv::Mat &img, bool keepRatio)
 		cv::Scalar(0, 0, 0), true, false);
 
 
+	int size4[4] = { 1, 1, 640, 640 };
+	cv::Mat blob_one(4, size4, CV_8UC1, cv::Scalar(0));
+
+	for (int i = 0; i < 640; i++)
+		for (int j = 0; j < 640; j++)
+			blob_one.ptr<uchar>(0, 0, i)[j] = blob.ptr<uchar>(0, 0, i)[j];
 
 	this->net.setInput(blob);
 	std::vector<cv::Mat> pred;
@@ -158,6 +164,9 @@ void Yolo::detect(cv::Mat &img, bool keepRatio)
 
 	time0 = clock();
 	
+	//for(int i = 0; i < this->net.getUnconnectedOutLayersNames().size(); i++)
+	//	std::cout << this->net.getUnconnectedOutLayersNames()[i] << std::endl;
+
 	this->net.forward(pred, this->net.getUnconnectedOutLayersNames());
 
 	time1 = clock();
@@ -166,11 +175,12 @@ void Yolo::detect(cv::Mat &img, bool keepRatio)
 
 	time2 = clock();
 
-	//std::cout << "forward time = " << double(time1 - time0) / CLOCKS_PER_SEC << std::endl;
-	//std::cout << "postprocess time = " << double(time2 - time1) / CLOCKS_PER_SEC << std::endl;
+	std::cout << "forward time = " << double(time1 - time0) / CLOCKS_PER_SEC << std::endl;
+	std::cout << "postprocess time = " << double(time2 - time1) / CLOCKS_PER_SEC << std::endl;
 
 	//cv::waitKey(0);
 }
+
 
 void Yolo::postprocess(std::vector<cv::Mat> &pred, cv::Mat& img)
 {
@@ -414,4 +424,115 @@ void Yolov7_Pose::drawPoints(std::vector<cv::Point> p, cv::Mat& frame)
 void Yolov7_Pose::setPoints(int num_points)
 {
 	this->num_points = num_points;
+}
+
+
+Yolov8_Pose::Yolov8_Pose(std::string modelpath, float confThreshold, float nmsThreshold, float objThreshold, bool isCuda) : Yolo(modelpath, confThreshold, nmsThreshold, objThreshold, isCuda)
+{
+	this->num_points = 17;
+	this->setClass({ "person" });
+}
+
+
+Yolov8_Pose::Yolov8_Pose(std::string modelpath, float confThreshold, float nmsThreshold, float objThreshold, bool isCuda, int num_points) : Yolo(modelpath, confThreshold, nmsThreshold, objThreshold, isCuda)
+{
+	this->num_points = num_points;
+	this->setClass({ "person" });
+}
+
+
+void Yolov8_Pose::setPoints(int num_points)
+{
+	this->num_points = num_points;
+}
+
+
+void Yolov8_Pose::postprocess(std::vector<cv::Mat>& pred, cv::Mat& img)
+{
+	std::vector<float> confidences;
+	std::vector<cv::Rect> boxes;
+	std::vector<int> classIds;
+	std::vector<std::vector<cv::Point>> points;
+
+												// 输出结果的层数	1 xywh+ncconf+np*3 8400
+
+
+		
+
+
+	int num_proposal = pred[0].size[2];
+	int out_dim = pred[0].size[1];
+
+	pred[0] = pred[0].reshape(0, out_dim).t();				//变成h*w*3 nc+5维度的矩阵
+	float* pdata = (float*)pred[0].data;					//定义浮点型指针
+
+
+	for (int j = 0; j < num_proposal; j++)
+	{
+		int index = j * out_dim;
+
+		cv::Mat scores(1, this->num_classes, CV_32FC1, pdata + index + 4);
+		cv::Point classIdPoint;
+		double max_class_score;
+		cv::minMaxLoc(scores, 0, &max_class_score, 0, &classIdPoint);
+
+		if (max_class_score > this->confThreshold)
+		{
+			const int class_idx = classIdPoint.x;
+
+			float cx = pdata[index];
+			float cy = pdata[index + 1];
+			float boxw = pdata[index + 2];
+			float boxh = pdata[index + 3];
+
+			int left = int((cx - (float)padw - 0.5 * boxw) * ratiow);
+			int top = int((cy - (float)padh - 0.5 * boxh) * ratioh);
+
+			confidences.push_back((float)max_class_score);
+			boxes.push_back(cv::Rect(left, top, (int)(boxw * ratiow), (int)(boxh * ratioh)));
+			classIds.push_back(class_idx);
+
+			float new_ratioh = this->newh / boxh;
+			float new_ratiow = this->neww / boxw;
+
+			std::vector<cv::Point> temp;
+			for (int np = 0; np < this->num_points; np++)
+			{
+				float conf_p = pdata[index + 4 + this->num_classes + np * 3 + 2];
+				if (conf_p > 0.5)
+				{
+					float px = pdata[index + 4 + this->num_classes + np * 3];
+					float py = pdata[index + 4 + this->num_classes + np * 3 + 1];
+					int tempx = int((px - (float)padw) * this->ratiow);
+					int tempy = int((py - (float)padh) * this->ratioh);
+					//cv::Point p(cv::Point(tempx, tempy));
+					temp.push_back(cv::Point(tempx, tempy));
+				}
+			}
+			points.push_back(temp);
+
+		}
+
+
+	}
+
+	std::vector<int> indices;
+	cv::dnn::NMSBoxes(boxes, confidences, this->confThreshold, this->nmsThreshold, indices);
+	for (size_t i = 0; i < indices.size(); ++i)
+	{
+		int idx = indices[i];
+		cv::Rect box = boxes[idx];
+		this->drawPred(confidences[idx], box.x, box.y,
+			box.x + box.width, box.y + box.height, img, classIds[idx]);
+		this->drawPoints(points[idx], img);
+	}
+}
+
+
+void Yolov8_Pose::drawPoints(std::vector<cv::Point> p, cv::Mat& frame)
+{
+	for (int i = 0; i < p.size(); i++)
+	{
+		cv::circle(frame, p[i], 2, cv::Scalar(255, 0, 0), 2);
+	}
 }

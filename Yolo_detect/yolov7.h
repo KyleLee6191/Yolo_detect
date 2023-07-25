@@ -69,3 +69,29 @@ protected:
 	//	std::vector<cv::Rect>& boxes, std::vector<int>& classIds) override;
 
 };
+
+
+class Yolov8_Pose : public Yolo
+{
+public:
+	//using Yolo::Yolo;
+	Yolov8_Pose(std::string modelpath, float confThreshold, float nmsThreshold, float objThreshold, bool isCuda);
+
+	Yolov8_Pose(std::string modelpath, float confThreshold, float nmsThreshold, float objThreshold, bool isCuda, int num_points);
+
+	void setPoints(int num_points);
+
+	void postprocess(std::vector<cv::Mat>& pred, cv::Mat& img) override;
+
+
+
+protected:
+
+	int num_points;
+
+	void drawPoints(std::vector<cv::Point> p, cv::Mat& frame);
+
+	//void postprocess(std::vector<cv::Mat>& pred, std::vector<float>& confidences,
+	//	std::vector<cv::Rect>& boxes, std::vector<int>& classIds) override;
+
+};
